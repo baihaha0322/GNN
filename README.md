@@ -7,6 +7,6 @@ We present a comparative analysis between lineage trees constructed based on clo
 # Install and Usage
 Helper functions are defined in requirement.txt
 
-# Rscript
+# Python script
 Full code is available in run.py
 A jupyter notebook (ipynb) is also provided
