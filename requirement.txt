@@ -1,0 +1,564 @@
+# construct euclidean distance
+n=10
+def compute_distances(X):
+  # n is the number of points 
+ 
+ return squareform(pdist(X, 'euclidean')) 
+
+# compute affinity matrix
+def compute_affinity_matrix(D, kernel_type, sigma=None, k=None):
+  W = np.zeros((n,n), dtype = 'float64')  
+  if kernel_type == 'gaussian':  
+        sigma > 0
+        W= np.exp(-D**2/sigma**2)
+  else:
+        kernel_type == 'adaptive'
+        sigma = np.zeros((n,1), dtype = 'float64')  
+        for m in range(0,n):
+          # sort distance in ascending order of each row in D (distance matrix)
+           sortD=sorted(D[m,:],reverse=False)
+          # construct sigma where sigma of i is the distance from i to its k nearest neighbor
+           sigma[m]=sortD[k]
+        for i in range(0,n): 
+          for j in range (0,n):  
+          # compute adapative gaussian kernel
+            W[i][j]=0.5 *(np.exp(-D[i][j]**2/sigma[i]**2)+np.exp(-D[i][j]**2/sigma[j]**2))
+  
+  return W
+
+def diff_map_info(W):
+# compute D (diagonal matrix of row sums)
+ Dia=np.diag(np.sum(W, axis=1))
+# create symmetrix matrix 
+# diffusion matrix
+ Ms=la.inv(Dia)**(1/2)@ W @la.inv(Dia)**(1/2)
+# compute eigenpairs of Ms and order eigenvector in descending order
+ eigval, eigvec = la.eigh(Ms)
+ idx=eigval.argsort()[::-1]
+ eigval=eigval[idx]
+ eigvec=eigvec[:,idx]
+# compute eigenvectors and eigenvalues of M
+ diff_vec1=la.inv(Dia**(1/2))@ eigvec
+ diff_vec=(diff_vec1/np.linalg.norm(diff_vec1,axis=0))
+ diff_eig=eigval[1:]
+ diff_vec=diff_vec[:,1:]
+ return diff_vec,diff_eig
+
+def get_diff_map(diff_vec,diff_eig,t):
+  # eigenvalue in diffusion map
+  eigvaluet=diff_eig**t
+  diff_map=diff_vec @ np.diag(eigvaluet)
+  return diff_map
+def extract_rows(csv_reader, csv_data_clone_cells):
+    """
+    Extract relevant row values from a csv.DictReader() object.
+
+    Obs:
+        In some datasets there may be a column, 'ident_name'
+        which stores the names of the cell states.
+        That column is used for parts that should output something
+        about the cell states (e.g. metric values in the csv).
+        However, in all datasets used for the analyses in the paper,
+        there wasn't such column, so the column 'ident' itself is used
+        as the column name.
+    """
+    row_tmp = {}
+    for i, row in enumerate(csv_reader):
+        # Store the register in a new dedicated list.
+        # Discard all registers that had an empty value
+        # for any of the fields
+        # Also, for some reason, if cloneID is converted into a string
+        # rather than a integer, then other, unrelated
+        # floating computations become a little bit unstable
+        # (e.g. the metric values begin to differ in
+        # their latter decimals when computed with
+        # the exact same parameters)
+        row_tmp["cloneID"] = int(row["cloneID"])
+        if(row_tmp["cloneID"] == ""):
+            print("Register number {}.".format(i))
+            print("cloneID is empty."
+                    .format(row["cloneID"])
+                    )
+            continue
+
+        row_tmp["ident_name"] = str(row["ident"])
+        if(row_tmp["ident_name"] == ""):
+            print("Register number {}.".format(i))
+            print("ident_name is empty.\n"
+                    .format(row["ident"])
+                    )
+            continue
+
+        row_tmp["ident"] = str(row["ident"])
+        if(row_tmp["ident"] == ""):
+            print("Register number {}.".format(i))
+            print("ident is empty.\n"
+                .format(row["ident"])
+                )
+            continue
+
+        csv_data_clone_cells.append(row_tmp.copy())
+    return csv_data_clone_cells
+
+def parse_csv_data(csv_data_url, csv_data_file):
+    """
+    Return the relevant parsed data from a selected source.
+
+    The relevant data are constituted by:
+        1) Data of cells that belong to a clone,
+        without including the name of the cluster.
+        2) The names of each cluster.
+    """
+    csv_data_clone_cells = []
+    # Before calling this function, if the selected source was
+    # a csv file, then csv_data_url was set to None. Otherwise,
+    # the url source has priority.
+    if(csv_data_url is not None):
+        response = requests.get(csv_data_url)
+        with closing(requests.get(csv_data_url, stream=True)) as req:
+            csv_reader = csv.DictReader(codecs.iterdecode(
+                                                req.iter_lines(), 'utf-8'))
+            csv_data_clone_cells = extract_rows(csv_reader
+                                                    , csv_data_clone_cells)
+    else:
+        with open(csv_data_file, newline='') as csvfile:   ###
+            csv_reader = csv.DictReader(csvfile)
+            csv_data_clone_cells = extract_rows(csv_reader
+                                                    , csv_data_clone_cells)
+            csvfile.close()
+    return csv_data_clone_cells
+
+def compute_clones_distribution(csv_data_clone_cells):
+    """Return a counter of cells per clone."""
+    clones = collections.Counter()
+    for row in csv_data_clone_cells:
+        cloneID = row["cloneID"]
+        clones[cloneID] += 1
+    return clones
+
+def compute_clusters_distribution(csv_data_clone_cells):
+    """Return a counter of cells per cluster, and their names."""
+    clusters = collections.Counter()
+    clusters_names = {}
+    for row in csv_data_clone_cells:
+        clusterID = row["ident"]
+        cluster_name = row["ident_name"]
+        clusters[clusterID] += 1
+        clusters_names[clusterID] = cluster_name
+    return clusters, clusters_names
+
+def generate_cluster_pairs(clusters_list):
+    """
+    Return a dictionary-valued dictionary, indexed by the cluster pairs.
+
+    The indices are 2-tuples, whose elements are the clusterIDs.
+    Despite this, each pair is conceptually considered to be
+    an unordered pair, and hereby appearing only once.
+    This dictionary will later store all relevant data
+    of each pair of clusters:
+        - The metric values for the clusters
+        (according to the definition given
+        in the Methods section of the paper),
+        resulting from the data in the dataset.
+        - The parameters of the distribution of metric values
+        resulting from doing the shuffling of cell cluster assignments.
+        - The z-score of the first with respect to the second.
+    """
+    cluster_pairs = {}
+    for cluster_pair in itertools.combinations_with_replacement(
+                                                    clusters_list, 2):
+        cluster_pairs[cluster_pair] = {}
+    return cluster_pairs
+
+def compute_num_cells_per_clones_per_cluster(csv_data_clone_cells):
+    """
+    Return a multi-level counter with different cell counts per level.
+
+    Each count is stored in a field named "total".
+    What is counted on each level:
+        1) Total number of cells.
+        2) Total number of cells per cluster.
+        3) Total number of cells per clone per cluster.
+    """
+    num_cells = collections.Counter()
+    num_cells["total"] = 0
+    for cell in csv_data_clone_cells:
+        cluster = cell["ident"]
+        clone = cell["cloneID"]
+        num_cells["total"] += 1
+        if(cluster not in num_cells):
+            num_cells[cluster] = collections.Counter()
+            num_cells[cluster]["total"] = 0
+        num_cells[cluster]["total"] += 1
+        if(clone not in num_cells[cluster]):
+            num_cells[cluster][clone] = collections.Counter()
+            num_cells[cluster][clone]["total"] = 0
+        num_cells[cluster][clone]["total"] += 1
+    return num_cells
+
+def compute_total_num_cells_of_shared_clone_and_cluster_pair(clone
+    , cluster_pair, num_cells):
+    """
+    Return the number of cells in a cluster pair and its shared clone.
+
+    For a clone and a cluster pair,
+    if the clone was "shared" by the cluster pair (according to the
+    corresponding definition in the Methods section of the paper),
+    count the cells that belonged to the clone
+    and also were assigned to one of the two clusters.
+    If the clone was not shared between the clusters, return 0.
+    """
+    total_num_cells_of_shared_clone_and_cluster_pair = 0
+    # The number of cells of the shared clone of each cluster is added
+    for cluster in cluster_pair:
+        # If no cells of a clone were assigned to any of the clusters
+        if(clone not in num_cells[cluster]
+                    or num_cells[cluster][clone]["total"] < 1):
+            # Then that clone isn't "shared" by the pair
+            return 0
+        # If the cluster pair is composed by the same cluster
+        if(cluster_pair[0] == cluster_pair[1]):
+            # Then the total number of cells of the shared clone
+            # is just that of that cluster
+            total_num_cells_of_shared_clone_and_cluster_pair = (
+                                        num_cells[cluster][clone]["total"])
+            break
+        else:
+            total_num_cells_of_shared_clone_and_cluster_pair += (
+                                        num_cells[cluster][clone]["total"])
+    # If there were less than 2 cells of a clone
+    # that were assigned to any of the clusters, then
+    # that clone isn't "shared" between them
+    if(total_num_cells_of_shared_clone_and_cluster_pair < 2):
+        return 0
+    else:
+        return total_num_cells_of_shared_clone_and_cluster_pair
+
+def compute_metric_value_single_pair(num_cells, cluster_pair, clones):
+    """
+    Return the metric value of a cluster pair.
+
+    (According to the definition
+    given in the Methods section of the paper).
+    """
+    metric_value = 0
+    # For each clone that had cells assigned to any of the states
+    for clone in set(itertools.chain(num_cells[cluster_pair[0]].keys()
+                                    , num_cells[cluster_pair[1]].keys())
+                    ):
+        # Note that in the previous operation, as num_cells stores
+        # the total value in a separated field, in the same level that
+        # the clones, the "total" field is also included
+        if(clone == "total"):
+            # So skip it
+            continue
+        # Only the cells that belonged to shared clones are added
+        total_num_cells_of_shared_clone_and_cluster_pair = (
+                compute_total_num_cells_of_shared_clone_and_cluster_pair(
+                                            clone, cluster_pair, num_cells))
+        # Compute and store the relative value with respect to the
+        # total number of cells in the (shared) clone
+        metric_value += (total_num_cells_of_shared_clone_and_cluster_pair
+                                                            / clones[clone])
+    return metric_value
+
+def compute_metric_values_all_pairs(num_cells, cluster_pairs, clones):
+    """
+    Return the metric value of each cluster pair.
+
+    It is stored in a dictionary field, indexed by the cluster pair.
+    """
+    for cluster_pair in cluster_pairs:
+        cluster_pairs[cluster_pair]["metric_value"] = (
+                    compute_metric_value_single_pair(
+                                num_cells, cluster_pair, clones))
+    return cluster_pairs
+
+def random_sample_with_frequency(freq_table):
+    """
+    Return a random sample of a given distribution.
+
+    The elements are determined by freq_table, which is expected to be
+    a collections.Counter() object
+    (and hereby store counts of elements).
+    """
+    elements = list(freq_table.elements())
+    total_elements = len(elements)
+    sample = tuple(random.sample(elements, k=total_elements))
+    return list(sample)
+
+def print_matrix_onto_csv(array_2d, clusters_names_array_order
+    , csv_matrix_output_file):
+    """
+    Write a matrix of values for each cluster pair into a csv file.
+    """
+    with open(csv_matrix_output_file, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        # Write the column indexes in the first row
+        writer.writerow(["ident_name"] + clusters_names_array_order)
+        # Write each row, beginning by its corresponding index
+        for cluster_name, row in zip(
+                                clusters_names_array_order, array_2d):
+            writer.writerow([cluster_name] + list(row))
+        csvfile.close()
+
+def write_matrix(title, fieldname, cluster_pairs, clusters, clusters_names
+    , csv_matrix_output_file):
+    """
+    Write a matrix of values of each cluster pair into a csv file.
+
+    Also, return the matrix in a 2D list form,
+    and a list with the cluster names.
+    Parameters:
+        title: string that contains the title of the matrix to be
+        outputed. It's just for outputing a message in the console.
+        fieldname: in the dictionary cluster_pairs, it's the
+        name of the field whose values are desired to be written.
+        cluster_pairs: dictionary indexed by the cluster pairs,
+        among whose attributes should be fieldname.
+        clusters: a collections.Counter() object with the
+        frequency distribution of the clusters.
+        clusters_names: a list that stores, for each clusterID,
+        its corresponding name.
+        csv_matrix_output_file: string with the file path where
+        the matrix is desired to be written.
+    """
+    # First, transform the data
+    # to a structure accepted by the used libraries.
+
+    # Create a 2-D array form of the values in cluster_pairs,
+    # and a list that stores the clusters in the order
+    # in which they occur in that array (along the columns or rows)
+    matrix, clusters_list_array_order = (
+                dict_to_array(cluster_pairs, len(clusters)
+                                            , fieldname)
+            )
+    print(title + ":")
+    print_2D_float_list(matrix)
+    # Create a list that stores the cluster names, in the order
+    # in which they occur in the 2D array (along the columns or rows)
+    clusters_names_array_order = [
+            clusters_names[cluster] for cluster in clusters_list_array_order]
+    print_matrix_onto_csv(matrix, clusters_names_array_order
+                            , csv_matrix_output_file)
+
+    return matrix, clusters_names_array_order
+
+def compute_distribution_parameters(number_list):
+    """Return the mean and standard deviation of a number list."""
+    return (float(statistics.mean(number_list))
+            , float(statistics.stdev(number_list)))
+
+def compute_distributions(cluster_pairs, num_shufflings
+    , csv_data_clone_cells, clusters):
+    """
+    Return distribution parameters for each cluster pair.
+
+    Do the cell cluster assignment shufflings,
+    simulate the resulting assignments, and for each pair of clusters
+    compute and store in a list
+    the metric values resulting from each shuffling.
+    Then compute and store the means and standard deviations
+    of the resulting distributions.
+    """
+    # List that will store the simulated data in each shuffling
+    csv_data_clone_cells_local_shuffle = copy.deepcopy(csv_data_clone_cells)
+    # Dictionary that will store in lists the metric values
+    # obtained over the shufflings for each cluster pair
+    cluster_pairs_shufflings = generate_cluster_pairs(clusters.keys())
+    for cluster_pair in cluster_pairs_shufflings:
+        cluster_pairs_shufflings[cluster_pair]["metric_value"] = []
+    # Dictionary, local to each shuffling,
+    # that will store the metric values for each cluster pair
+    cluster_pairs_local_shuffle = generate_cluster_pairs(clusters.keys())
+
+    for shuffling in range(0, num_shufflings):
+        # Perform the random shuffling of cluster assigments
+        clusters_assignment = random_sample_with_frequency(clusters)
+        # Simulate cell cluster assignments
+        for i, csv_data_clone_cell_local in enumerate(
+                                        csv_data_clone_cells_local_shuffle):
+            csv_data_clone_cell_local["ident"] = clusters_assignment[i]
+        # Compute the metric value for each cluster pair
+        # observed in the current sample.
+        clones = compute_clones_distribution(
+                                        csv_data_clone_cells_local_shuffle)
+        num_cells = compute_num_cells_per_clones_per_cluster(
+                                        csv_data_clone_cells_local_shuffle)
+        cluster_pairs_local_shuffle = compute_metric_values_all_pairs(
+                            num_cells, cluster_pairs_local_shuffle, clones)
+        # Append the current shuffling's results to the lists
+        for cluster_pair in cluster_pairs_local_shuffle:
+            cluster_pairs_shufflings[
+                    cluster_pair]["metric_value"].append(
+                                        cluster_pairs_local_shuffle[
+                                                cluster_pair]["metric_value"])
+
+    # Compute, for each cluster pair, the parameters
+    # of the metric values distributions resulting from the simulations
+    for cluster_pair in cluster_pairs_shufflings:
+        (cluster_pairs[cluster_pair]["avg_metric_value"]
+                , cluster_pairs[cluster_pair]["stdv_metric_value"]) \
+                = compute_distribution_parameters(
+                                        cluster_pairs_shufflings[
+                                                cluster_pair]["metric_value"])
+    return cluster_pairs
+
+def compute_z_scores(cluster_pairs):
+    """
+    Return the z-scores for each pair of clusters.
+
+    The z-scores are of the metric values of the clusters
+    (according to the definition
+    given in the Methods section of the paper),
+    resulting from the data in the dataset,
+    with respect to their corresponding distributions of metric values
+    resulting from doing the cell cluster assignments shufflings.
+    Obs:
+        There is a special case when a pair of clusters
+        obtains the same metric value in all shufflings
+        (and hereby its distribution's stdev=0
+        and the z-score is not defined).
+        A "N/A" value is assigned to those clusters in this case
+        instead of a z-score value.
+        In practice, however, this case is unlikely, and even more
+        when N is large.
+    """
+    cluster_pairs_infinite_z_score = []
+    for cluster_pair in cluster_pairs:
+        deviation = (float(cluster_pairs[cluster_pair]["metric_value"])
+                        -cluster_pairs[cluster_pair]["avg_metric_value"])
+        if(cluster_pairs[cluster_pair]["stdv_metric_value"] == 0):
+            print("Pair {} had a stdev = 0, with a deviation = {}"
+                                            .format(cluster_pair, deviation))
+            print(cluster_pairs[cluster_pair])
+            cluster_pairs_infinite_z_score.append(cluster_pair)
+        else:
+            cluster_pairs[
+                    cluster_pair]["metric_value_z_score"] = (
+                                    deviation
+                                    / cluster_pairs[
+                                            cluster_pair]["stdv_metric_value"]
+                            )
+    for cluster_pair in cluster_pairs_infinite_z_score:
+        cluster_pairs[cluster_pair]["metric_value_z_score"] = "N/A"
+    return cluster_pairs
+
+def print_2D_float_list(l):
+    """Print a 2D list of floats in a row-wise format."""
+    for row in l:
+        for col in row:
+            print("{:8.1f}".format(col), end=" ")
+        print("")
+
+def dict_to_array(cluster_pairs, num_clusters, key_name):
+    """
+    Return a 2D list with a value for each cluster pair, and their IDs.
+
+    The value for each cluster pair is obtained from the key
+    named key_name.
+    The 2D list to be returned is conceptually considered to be
+    a 2D array, with the rows and columns corresponding to
+    the first and second clusters of the cluster pairs,
+    and viceversa (to fill the whole matrix).
+    The cell value will be the corresponding item stored in the field
+    key_name.
+    The list of row/column IDs is in insertion order, which is the same
+    that the order in which they appear in a cluster pair
+    when the latter are iterated over.
+    Obs:
+        The latter means that the order of the cluster IDs (idents)
+        is not maintained, but it depends on
+        when it appears within a cluster pair,
+        and when that cluster pair appears
+        in the iteration of cluster pairs.
+    """
+    # Ordered Dictionary that will store the indexes in the array
+    # corresponding to each of the clusters
+    array_indexes = collections.OrderedDict()
+    max_array_index = -1
+    # Initialize the array to a (num_clusters x num_clusters) shape
+    array_2D = np.array([
+                                [0.0 for i in range(num_clusters)]
+                            for j in range(num_clusters)])
+    for cluster_pair in cluster_pairs:
+        for cluster in cluster_pair:
+            if(cluster not in array_indexes):
+                max_array_index += 1
+                print("array_indexes[{}] = {}"
+                        .format(cluster, max_array_index))
+                # As array_indexes is an Ordered Dict, the order in
+                # which the indexes were inserted (and the dict keys
+                # created) will correspond to the indexes themselves
+                array_indexes[cluster] = max_array_index
+        # Fill the matrix with the corresponding value
+        array_2D[
+                array_indexes[cluster_pair[0]]][
+                array_indexes[cluster_pair[1]]] = cluster_pairs[cluster_pair][
+                                                                    key_name]
+        # In both orders (to fill the whole matrix)
+        array_2D[
+                array_indexes[cluster_pair[1]]][
+                array_indexes[cluster_pair[0]]] = cluster_pairs[cluster_pair][
+                                                                    key_name]
+    # The keys in insertion order of array_indexes are the
+    # clusterIDs in the order that they will appear in the new 2D array
+    keys_in_insertion_order = [key for key in array_indexes]
+    return array_2D, keys_in_insertion_order
+
+def plot_clustermap(title, array_2D, labels_array_order, vmin, vmax, output_dir, add_annot):
+    """
+    Plot clustermap of the values in array_2D.
+
+    An optional step of hiding the upper triangular matrix
+    can be taken.
+    """
+    # print(title)
+    # print_2D_float_list(array_2D)
+    mask = np.zeros_like(array_2D)
+    # Set the next assigment to False for plotting
+    # the whole matrix, and to True for only the lower triangular matrix
+    # with the diagonal
+    mask[np.triu_indices_from(mask)] = False
+    mask[np.diag_indices_from(mask)] = False
+    with sns.axes_style("white"):
+        ax = sns.clustermap(array_2D
+                    , xticklabels = labels_array_order
+                    , yticklabels = labels_array_order
+                    , mask=mask, vmin=vmin, vmax=vmax
+                    , annot=add_annot
+                    # , square=True
+                    , cmap="Blues")
+        plt.setp(ax.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
+    # save heatmap
+    plt.savefig(output_dir, dpi=300, bbox_inches="tight", format="png")
+    plt.show()
+
+def output_lineage_coupling_computations(
+    cluster_pairs, clusters, clusters_names
+    , csv_lineage_coupling_scores_matrix_output_file, vmin, vmax, output_dir, add_annot=False):
+    """
+    Output computations related to clusters' lineage couplings.
+
+    The computations of the lineage coupling scores,
+    outputed in the form of:
+        - a matrix onto a csv
+        - and a clustermap in a plot
+    """
+    # First, transform data to a structure accepted by seaborn methods.
+
+    # The 2D array form of the z-scores,
+    # and a list that stores the order of the clusters
+    # in which they occur in that array (along the columns or rows)
+    z_scores_array, clusters_list_array_order = (
+                dict_to_array(cluster_pairs, len(clusters)
+                        , "metric_value_z_score")
+            )
+    print("Lineage Coupling Matrix:")
+    print_2D_float_list(z_scores_array)
+    clusters_names_array_order = [
+            clusters_names[cluster] for cluster in clusters_list_array_order]
+    print_matrix_onto_csv(z_scores_array, clusters_names_array_order
+                , csv_lineage_coupling_scores_matrix_output_file)
+    plot_clustermap("Lineage Coupling Scores", z_scores_array
+                                    , clusters_names_array_order, vmin, vmax, output_dir, add_annot)
